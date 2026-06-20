@@ -65,7 +65,6 @@ def train_model():
     from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import LabelEncoder, StandardScaler
     from sklearn.ensemble import RandomForestClassifier
-    from imblearn.over_sampling import SMOTE
 
     df = load_dataset().copy()
     df.drop(columns=['customerID'], inplace=True, errors='ignore')
@@ -90,14 +89,13 @@ def train_model():
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-    sm = SMOTE(random_state=42)
-    X_train_sm, y_train_sm = sm.fit_resample(X_train, y_train)
-
     scaler = StandardScaler()
-    X_train_sc = scaler.fit_transform(X_train_sm)
+    X_train_sc = scaler.fit_transform(X_train)
 
-    rf = RandomForestClassifier(n_estimators=100, max_depth=10, min_samples_leaf=5, random_state=42, n_jobs=-1)
-    rf.fit(X_train_sc, y_train_sm)
+    # class_weight='balanced' menangani data imbalanced tanpa perlu SMOTE/imbalanced-learn
+    rf = RandomForestClassifier(n_estimators=100, max_depth=10, min_samples_leaf=5,
+                                 class_weight='balanced', random_state=42, n_jobs=-1)
+    rf.fit(X_train_sc, y_train)
 
     return rf, scaler, X.columns.tolist()
 
