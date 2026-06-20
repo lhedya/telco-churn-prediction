@@ -1,17 +1,16 @@
 # ============================================================
 # app.py — Telco Customer Churn | Business Intelligence Dashboard
+# Versi: Model di-train langsung (tanpa file .pkl)
 # Deploy: streamlit run app.py
 # ============================================================
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pickle
 import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
 
-# ── Page Config ───────────────────────────────────────────────
 st.set_page_config(
     page_title="Churn Intelligence | Telco",
     page_icon="📡",
@@ -19,21 +18,17 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ── CSS ───────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-
 [data-testid="stSidebar"] { background: #0f1923; border-right: 1px solid #1e2d3d; }
 [data-testid="stSidebar"] * { color: #c9d6e3 !important; }
-
 .main .block-container { background: #0b1520; padding: 1.5rem 2rem; max-width: 1400px; }
-.page-title { font-size: 22px; font-weight: 700; color: #e8f4fd; letter-spacing: -0.3px; margin-bottom: 2px; }
+.page-title { font-size: 22px; font-weight: 700; color: #e8f4fd; margin-bottom: 2px; }
 .page-sub   { font-size: 13px; color: #5a8aad; margin-bottom: 1.2rem; }
-
 .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
-.kpi      { background: #111e2d; border: 1px solid #1a2d42; border-radius: 10px; padding: 16px 18px; position: relative; overflow: hidden; }
+.kpi { background: #111e2d; border: 1px solid #1a2d42; border-radius: 10px; padding: 16px 18px; position: relative; overflow: hidden; }
 .kpi::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; }
 .kpi.red::before    { background: linear-gradient(90deg,#e63946,#ff6b6b); }
 .kpi.green::before  { background: linear-gradient(90deg,#2dc653,#56ef7e); }
@@ -42,32 +37,19 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 .kpi-label { font-size: 11px; color: #5a8aad; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }
 .kpi-value { font-size: 28px; font-weight: 700; color: #e8f4fd; line-height: 1; margin-bottom: 4px; }
 .kpi-delta { font-size: 11px; color: #5a8aad; }
-.kpi-delta.up   { color: #e63946; }
+.kpi-delta.up { color: #e63946; }
 .kpi-delta.down { color: #2dc653; }
-
 .sec-head { font-size: 13px; font-weight: 600; color: #7a9bb5; text-transform: uppercase;
             letter-spacing: 1px; margin: 20px 0 10px; padding-bottom: 6px;
             border-bottom: 1px solid #1a2d42; }
-
 .alert-high   { background:#1c0a0a; border:1px solid #e63946; border-radius:8px; padding:12px 16px; margin:8px 0; color:#ff9a9a; font-size:13px; }
 .alert-medium { background:#1a1200; border:1px solid #e9830f; border-radius:8px; padding:12px 16px; margin:8px 0; color:#ffc96b; font-size:13px; }
 .alert-low    { background:#071a0e; border:1px solid #2dc653; border-radius:8px; padding:12px 16px; margin:8px 0; color:#7effa0; font-size:13px; }
-
-.stTabs [data-baseweb="tab-list"] { background:#0f1923; border-radius:8px; padding:4px; gap:4px; }
-.stTabs [data-baseweb="tab"]      { border-radius:6px; color:#5a8aad; font-size:13px; font-weight:500; padding:6px 16px; }
-.stTabs [aria-selected="true"]    { background:#111e2d !important; color:#e8f4fd !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── Load Model ────────────────────────────────────────────────
-@st.cache_resource
-def load_artifacts():
-    with open('rf_model.pkl',     'rb') as f: model     = pickle.load(f)
-    with open('scaler.pkl',       'rb') as f: scaler    = pickle.load(f)
-    with open('feature_cols.pkl', 'rb') as f: feat_cols = pickle.load(f)
-    return model, scaler, feat_cols
-
+# ── Load & Cache Dataset ──────────────────────────────────────
 @st.cache_data
 def load_dataset():
     URL = 'https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv'
@@ -77,13 +59,47 @@ def load_dataset():
     df['Churn_bin'] = df['Churn'].map({'Yes': 1, 'No': 0})
     return df
 
-try:
-    model, scaler, feat_cols = load_artifacts()
-    model_loaded = True
-except:
-    model_loaded = False
+# ── Train & Cache Model ───────────────────────────────────────
+@st.cache_resource
+def train_model():
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import LabelEncoder, StandardScaler
+    from sklearn.ensemble import RandomForestClassifier
+    from imblearn.over_sampling import SMOTE
 
-df = load_dataset()
+    df = load_dataset().copy()
+    df.drop(columns=['customerID'], inplace=True, errors='ignore')
+
+    # Feature engineering
+    df['ChargesPerTenure'] = df['TotalCharges'] / (df['tenure'] + 1)
+    df['IsNewCustomer']    = (df['tenure'] <= 6).astype(int)
+    df['IsMonthToMonth']   = (df['Contract'] == 'Month-to-month').astype(int)
+
+    # Encoding
+    binary_cols = ['gender','Partner','Dependents','PhoneService','PaperlessBilling',
+                   'MultipleLines','OnlineSecurity','OnlineBackup','DeviceProtection',
+                   'TechSupport','StreamingTV','StreamingMovies']
+    le = LabelEncoder()
+    for col in binary_cols:
+        df[col] = le.fit_transform(df[col].astype(str))
+
+    df = pd.get_dummies(df, columns=['InternetService','Contract','PaymentMethod'], drop_first=True)
+
+    X = df.drop(columns=['Churn','Churn_bin'], errors='ignore')
+    y = df['Churn_bin']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+    sm = SMOTE(random_state=42)
+    X_train_sm, y_train_sm = sm.fit_resample(X_train, y_train)
+
+    scaler = StandardScaler()
+    X_train_sc = scaler.fit_transform(X_train_sm)
+
+    rf = RandomForestClassifier(n_estimators=100, max_depth=10, min_samples_leaf=5, random_state=42, n_jobs=-1)
+    rf.fit(X_train_sc, y_train_sm)
+
+    return rf, scaler, X.columns.tolist()
 
 
 # ── Helpers ───────────────────────────────────────────────────
@@ -148,6 +164,13 @@ def build_features(inp, feat_cols):
     return pd.DataFrame([row])[feat_cols]
 
 
+# ── Load Data & Model ─────────────────────────────────────────
+df = load_dataset()
+
+with st.spinner('Memuat model... (30–60 detik pertama kali)'):
+    model, scaler, feat_cols = train_model()
+
+
 # ── SIDEBAR ───────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 📡 Churn Intelligence")
@@ -191,15 +214,14 @@ if nav == "📊 Business Dashboard":
     st.markdown('<div class="page-title">📊 Business Intelligence Dashboard</div>', unsafe_allow_html=True)
     st.markdown('<div class="page-sub">Telco Customer Churn Analysis · IBM Dataset · Model: Random Forest AUC 0.834</div>', unsafe_allow_html=True)
 
-    # KPI
-    total         = len(df)
-    churned       = int(df['Churn_bin'].sum())
-    retained      = total - churned
-    churn_rate    = churned / total * 100
-    monthly_lost  = df[df['Churn']=='Yes']['MonthlyCharges'].sum()
-    annual_risk   = monthly_lost * 12
-    avg_tenure_c  = df[df['Churn']=='Yes']['tenure'].mean()
-    avg_tenure_r  = df[df['Churn']=='No']['tenure'].mean()
+    total        = len(df)
+    churned      = int(df['Churn_bin'].sum())
+    retained     = total - churned
+    churn_rate   = churned / total * 100
+    monthly_lost = df[df['Churn']=='Yes']['MonthlyCharges'].sum()
+    annual_risk  = monthly_lost * 12
+    avg_tenure_c = df[df['Churn']=='Yes']['tenure'].mean()
+    avg_tenure_r = df[df['Churn']=='No']['tenure'].mean()
 
     st.markdown(f"""
     <div class="kpi-grid">
@@ -226,7 +248,6 @@ if nav == "📊 Business Dashboard":
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Row 1: Contract + Tenure ──────────────────────────────
     st.markdown('<div class="sec-head">Segmentasi Risiko Churn</div>', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
 
@@ -235,11 +256,10 @@ if nav == "📊 Business Dashboard":
         cg.columns = ['Contract','Rate','Churned','Total']
         cg['Rate'] *= 100
         cg = cg.sort_values('Rate', ascending=True)
-
         fig, ax = plt.subplots(figsize=(6, 3.2))
         fig_style(fig, ax)
-        colors = ['#2dc653','#e9830f','#e63946']
-        bars = ax.barh(cg['Contract'], cg['Rate'], color=colors, height=0.55, edgecolor='none')
+        bars = ax.barh(cg['Contract'], cg['Rate'],
+                       color=['#2dc653','#e9830f','#e63946'], height=0.55, edgecolor='none')
         ax.set_xlabel('Churn Rate (%)', fontsize=10)
         ax.set_title('Churn Rate per Tipe Kontrak', color='#c9d6e3', fontsize=12, fontweight='600', pad=10)
         for bar, val, ch, tot in zip(bars, cg['Rate'], cg['Churned'], cg['Total']):
@@ -257,11 +277,11 @@ if nav == "📊 Business Dashboard":
         tg = df.groupby('tenure_bucket', observed=True)['Churn_bin'].agg(['mean','count']).reset_index()
         tg.columns = ['Bucket','Rate','Total']
         tg['Rate'] *= 100
-
         fig, ax = plt.subplots(figsize=(6, 3.2))
         fig_style(fig, ax)
-        clr = ['#e63946','#ff8c42','#e9830f','#5cb8e4','#2dc653']
-        bars = ax.bar(tg['Bucket'], tg['Rate'], color=clr, width=0.6, edgecolor='none')
+        bars = ax.bar(tg['Bucket'], tg['Rate'],
+                      color=['#e63946','#ff8c42','#e9830f','#5cb8e4','#2dc653'],
+                      width=0.6, edgecolor='none')
         ax.set_ylabel('Churn Rate (%)', fontsize=10)
         ax.set_title('Churn Rate per Tenure Pelanggan', color='#c9d6e3', fontsize=12, fontweight='600', pad=10)
         ax.tick_params(axis='x', rotation=15)
@@ -273,7 +293,6 @@ if nav == "📊 Business Dashboard":
         st.pyplot(fig)
         st.markdown('<div style="font-size:11px;color:#5a8aad">💡 Pelanggan baru (0–6 bln) punya churn rate tertinggi</div>', unsafe_allow_html=True)
 
-    # ── Row 2: Monthly Charges + Payment Method ───────────────
     st.markdown('<div class="sec-head">Revenue Impact & Payment Behavior</div>', unsafe_allow_html=True)
     col3, col4 = st.columns(2)
 
@@ -292,7 +311,7 @@ if nav == "📊 Business Dashboard":
         ax.legend(fontsize=9, facecolor='#1a2d42', edgecolor='none', labelcolor='#c9d6e3')
         plt.tight_layout()
         st.pyplot(fig)
-        st.markdown(f'<div style="font-size:11px;color:#5a8aad">💡 Median churn <b style="color:#ff6b6b">${med_c:.0f}</b> vs retain <b style="color:#7effa0">${med_r:.0f}</b> — pelanggan tagihan tinggi lebih berisiko</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:11px;color:#5a8aad">💡 Median churn <b style="color:#ff6b6b">${med_c:.0f}</b> vs retain <b style="color:#7effa0">${med_r:.0f}</b></div>', unsafe_allow_html=True)
 
     with col4:
         pm = df.groupby('PaymentMethod')['Churn_bin'].mean().sort_values(ascending=True) * 100
@@ -305,18 +324,17 @@ if nav == "📊 Business Dashboard":
         pm.index = [short.get(i,i) for i in pm.index]
         fig, ax = plt.subplots(figsize=(6, 3.2))
         fig_style(fig, ax)
-        bars = ax.barh(pm.index, pm.values, color=['#2dc653','#5cb8e4','#e9830f','#e63946'], height=0.55, edgecolor='none')
+        ax.barh(pm.index, pm.values,
+                color=['#2dc653','#5cb8e4','#e9830f','#e63946'], height=0.55, edgecolor='none')
         ax.set_xlabel('Churn Rate (%)', fontsize=10)
         ax.set_title('Churn Rate per Metode Pembayaran', color='#c9d6e3', fontsize=12, fontweight='600', pad=10)
-        for bar, val in zip(bars, pm.values):
-            ax.text(val+0.5, bar.get_y()+bar.get_height()/2,
-                    f'{val:.1f}%', va='center', color='#c9d6e3', fontsize=9, fontweight='600')
+        for i, val in enumerate(pm.values):
+            ax.text(val+0.5, i, f'{val:.1f}%', va='center', color='#c9d6e3', fontsize=9, fontweight='600')
         ax.set_xlim(0, 55)
         plt.tight_layout()
         st.pyplot(fig)
         st.markdown('<div style="font-size:11px;color:#5a8aad">💡 Electronic Check churn 2× lebih tinggi dari auto-payment</div>', unsafe_allow_html=True)
 
-    # ── Row 3: Internet Service + Heatmap ─────────────────────
     st.markdown('<div class="sec-head">Analisis Layanan & Kombinasi Risiko</div>', unsafe_allow_html=True)
     col5, col6 = st.columns(2)
 
@@ -324,22 +342,14 @@ if nav == "📊 Business Dashboard":
         ig = df.groupby('InternetService')['Churn_bin'].agg(['mean','sum']).reset_index()
         ig.columns = ['Service','Rate','Churned']
         ig['Rate'] *= 100
-        ig['RevRisk'] = [df[(df['Churn']=='Yes') & (df['InternetService']==s)]['MonthlyCharges'].sum()
-                         for s in ig['Service']]
         fig, ax = plt.subplots(figsize=(6, 3.2))
         fig_style(fig, ax)
-        x = np.arange(len(ig))
-        bars = ax.bar(x, ig['Rate'], color=['#5cb8e4','#e63946','#2dc653'], width=0.5, edgecolor='none')
-        ax.set_xticks(x); ax.set_xticklabels(ig['Service'], fontsize=10)
+        ax.bar(ig['Service'], ig['Rate'],
+               color=['#5cb8e4','#e63946','#2dc653'], width=0.5, edgecolor='none')
         ax.set_ylabel('Churn Rate (%)', fontsize=10)
         ax.set_title('Churn Rate per Layanan Internet', color='#c9d6e3', fontsize=12, fontweight='600', pad=10)
-        for bar, val, risk in zip(bars, ig['Rate'], ig['RevRisk']):
-            ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+0.5,
-                    f'{val:.1f}%', ha='center', color='#c9d6e3', fontsize=9, fontweight='600')
-            if risk > 0:
-                ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()/2,
-                        f'${risk/1000:.0f}K\nat risk', ha='center', va='center',
-                        color='white', fontsize=8, fontweight='600')
+        for i, val in enumerate(ig['Rate']):
+            ax.text(i, val+0.5, f'{val:.1f}%', ha='center', color='#c9d6e3', fontsize=9, fontweight='600')
         plt.tight_layout()
         st.pyplot(fig)
         st.markdown('<div style="font-size:11px;color:#5a8aad">💡 Fiber Optic — churn tertinggi sekaligus revenue at risk terbesar</div>', unsafe_allow_html=True)
@@ -363,46 +373,23 @@ if nav == "📊 Business Dashboard":
         st.pyplot(fig)
         st.markdown('<div style="font-size:11px;color:#5a8aad">💡 Month-to-Month + Fiber Optic = kombinasi risiko tertinggi</div>', unsafe_allow_html=True)
 
-    # ── Rekomendasi Bisnis ────────────────────────────────────
     st.markdown('<div class="sec-head">Rekomendasi Bisnis Berdasarkan Data</div>', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.markdown("""
-        <div class="alert-high">
-        <b>🔴 Prioritas 1 — Retensi Kontrak M2M</b><br><br>
-        Pelanggan Month-to-Month memiliki churn rate <b>~43%</b>.
-        Tawarkan diskon <b>15–20%</b> untuk upgrade ke kontrak tahunan
-        di bulan ke-3. Potensi recovery revenue signifikan per tahun.
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("""<div class="alert-high"><b>🔴 Prioritas 1 — Retensi Kontrak M2M</b><br><br>
+        Pelanggan Month-to-Month memiliki churn rate <b>~43%</b>. Tawarkan diskon <b>15–20%</b>
+        upgrade ke kontrak tahunan di bulan ke-3.</div>""", unsafe_allow_html=True)
     with c2:
-        st.markdown("""
-        <div class="alert-medium">
-        <b>🟡 Prioritas 2 — Onboarding Pelanggan Baru</b><br><br>
-        Tenure <b>0–6 bulan</b> adalah periode paling kritis.
-        Program check-in aktif di bulan ke-2 & ke-3 disertai
-        trial TechSupport gratis 1 bulan terbukti efektif.
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("""<div class="alert-medium"><b>🟡 Prioritas 2 — Onboarding Pelanggan Baru</b><br><br>
+        Tenure <b>0–6 bulan</b> adalah periode paling kritis. Program check-in aktif di bulan
+        ke-2 & ke-3 + trial TechSupport gratis 1 bulan.</div>""", unsafe_allow_html=True)
     with c3:
-        st.markdown("""
-        <div class="alert-low">
-        <b>🟢 Prioritas 3 — Migrasi Metode Bayar</b><br><br>
-        Electronic Check churn rate <b>~45%</b> vs auto-payment <b>~15%</b>.
-        Dorong migrasi ke Bank Transfer / Credit Card auto
-        dengan insentif cashback di bulan pertama.
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("""<div class="alert-low"><b>🟢 Prioritas 3 — Migrasi Metode Bayar</b><br><br>
+        Electronic Check churn rate <b>~45%</b> vs auto-payment <b>~15%</b>. Dorong migrasi
+        ke Bank Transfer / Credit Card auto.</div>""", unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown(f"""
-    <div style="display:flex;gap:24px;font-size:12px;color:#5a8aad;padding:4px 0;flex-wrap:wrap">
-      <span>🤖 Model: Random Forest · AUC 0.834</span>
-      <span>📦 Dataset: IBM Telco (7,043 records)</span>
-      <span>🛠 Stack: Python · Scikit-learn · SQL · Streamlit</span>
-      <span>👤 dibimbing.id Talent Showcase</span>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown('<div style="font-size:12px;color:#5a8aad">🤖 Random Forest · AUC 0.834 · IBM Telco Dataset · dibimbing.id Talent Showcase</div>', unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -412,55 +399,45 @@ else:
     st.markdown('<div class="page-title">🔮 Prediksi Churn Pelanggan</div>', unsafe_allow_html=True)
     st.markdown('<div class="page-sub">Masukkan data pelanggan di sidebar → klik Prediksi Sekarang</div>', unsafe_allow_html=True)
 
-    if not model_loaded:
-        st.error("⚠️ File model tidak ditemukan. Pastikan rf_model.pkl, scaler.pkl, feature_cols.pkl ada di folder yang sama.")
-        st.stop()
-
     if not predict_btn:
         total      = len(df)
         churned    = int(df['Churn_bin'].sum())
         churn_rate = churned / total * 100
         monthly_lost = df[df['Churn']=='Yes']['MonthlyCharges'].sum()
-
         col_a, col_b = st.columns([1.2, 1])
         with col_a:
             fig, ax = plt.subplots(figsize=(5.5, 3.5))
             fig_style(fig, ax)
-            sizes  = [total - churned, churned]
-            colors = ['#2dc653', '#e63946']
-            wedges, texts, autos = ax.pie(sizes, labels=['Retain','Churn'],
-                                           autopct='%1.1f%%', colors=colors,
-                                           startangle=90, pctdistance=0.75,
-                                           wedgeprops={'edgecolor':'#0b1520','linewidth':2})
+            wedges, texts, autos = ax.pie(
+                [total-churned, churned], labels=['Retain','Churn'],
+                autopct='%1.1f%%', colors=['#2dc653','#e63946'],
+                startangle=90, pctdistance=0.75,
+                wedgeprops={'edgecolor':'#0b1520','linewidth':2})
             for t in texts: t.set_color('#c9d6e3'); t.set_fontsize(11)
             for a in autos: a.set_color('white'); a.set_fontsize(10); a.set_fontweight('600')
             ax.set_title('Distribusi Churn Keseluruhan', color='#c9d6e3', fontsize=12, fontweight='600')
             plt.tight_layout()
             st.pyplot(fig)
-
         with col_b:
-            st.markdown(f"""
-            <br>
+            st.markdown(f"""<br>
             <div class="kpi red" style="margin-bottom:12px">
-              <div class="kpi-label">Churn Rate Keseluruhan</div>
+              <div class="kpi-label">Churn Rate</div>
               <div class="kpi-value">{churn_rate:.1f}%</div>
               <div class="kpi-delta up">▲ {churned:,} pelanggan churn</div>
             </div>
             <div class="kpi amber">
               <div class="kpi-label">Revenue At Risk / Tahun</div>
               <div class="kpi-value">{fmt_usd(monthly_lost*12)}</div>
-              <div class="kpi-delta">Jika tidak ada intervensi</div>
-            </div>
-            """, unsafe_allow_html=True)
+            </div>""", unsafe_allow_html=True)
             st.info("👈 Isi data pelanggan di sidebar, lalu klik **Prediksi Sekarang**")
     else:
         inp = {
-            'tenure':tenure, 'MonthlyCharges':monthly_charges, 'TotalCharges':total_charges,
-            'Contract':contract, 'PaymentMethod':payment_method, 'PaperlessBilling':paperless,
-            'InternetService':internet, 'OnlineSecurity':online_sec, 'OnlineBackup':online_bkp,
-            'TechSupport':tech_support, 'StreamingTV':streaming_tv, 'StreamingMovies':streaming_mv,
-            'PhoneService':phone_svc, 'MultipleLines':multi_lines, 'DeviceProtection':dev_prot,
-            'gender':gender, 'SeniorCitizen':senior, 'Partner':partner, 'Dependents':dependents,
+            'tenure':tenure,'MonthlyCharges':monthly_charges,'TotalCharges':total_charges,
+            'Contract':contract,'PaymentMethod':payment_method,'PaperlessBilling':paperless,
+            'InternetService':internet,'OnlineSecurity':online_sec,'OnlineBackup':online_bkp,
+            'TechSupport':tech_support,'StreamingTV':streaming_tv,'StreamingMovies':streaming_mv,
+            'PhoneService':phone_svc,'MultipleLines':multi_lines,'DeviceProtection':dev_prot,
+            'gender':gender,'SeniorCitizen':senior,'Partner':partner,'Dependents':dependents,
         }
         X_in  = build_features(inp, feat_cols)
         X_sc  = scaler.transform(X_in)
@@ -471,7 +448,6 @@ else:
         kpi_c = "red" if prob >= 0.70 else ("amber" if prob >= 0.45 else "green")
         ann_risk = monthly_charges * 12 if prob >= 0.45 else 0
 
-        # KPI row
         st.markdown(f"""
         <div class="kpi-grid">
           <div class="kpi {kpi_c}">
@@ -486,23 +462,18 @@ else:
           <div class="kpi amber">
             <div class="kpi-label">Revenue At Risk / Tahun</div>
             <div class="kpi-value">{fmt_usd(ann_risk)}</div>
-            <div class="kpi-delta">Jika tidak dicegah</div>
           </div>
           <div class="kpi blue">
             <div class="kpi-label">Monthly Charges</div>
             <div class="kpi-value">{fmt_usd(monthly_charges)}</div>
             <div class="kpi-delta">Tenure: {tenure} bulan</div>
           </div>
-        </div>
-        """, unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True)
 
         col_g, col_r = st.columns([1, 1.5])
-
         with col_g:
-            # Gauge chart
             fig, ax = plt.subplots(figsize=(5, 3.2), subplot_kw={'projection':'polar'})
-            fig.patch.set_facecolor('#111e2d')
-            ax.set_facecolor('#111e2d')
+            fig.patch.set_facecolor('#111e2d'); ax.set_facecolor('#111e2d')
             ax.barh(1, np.pi*0.45, left=np.pi,      height=0.4, color='#2dc653', alpha=0.35)
             ax.barh(1, np.pi*0.25, left=np.pi*0.55, height=0.4, color='#e9830f', alpha=0.35)
             ax.barh(1, np.pi*0.30, left=np.pi*0.30, height=0.4, color='#e63946', alpha=0.35)
@@ -520,48 +491,28 @@ else:
             plt.tight_layout()
             st.pyplot(fig)
 
-            # Probability bar
-            fig2, ax2 = plt.subplots(figsize=(5, 1.6))
-            fig_style(fig2, ax2)
-            ax2.barh(['Retain','Churn'], [1-prob, prob],
-                     color=['#2dc653','#e63946'], height=0.45, edgecolor='none')
-            ax2.set_xlim(0, 1)
-            for i, v in enumerate([1-prob, prob]):
-                ax2.text(v+0.01, i, f'{v*100:.1f}%', va='center', color='#c9d6e3', fontsize=10, fontweight='600')
-            for sp in ax2.spines.values(): sp.set_visible(False)
-            plt.tight_layout()
-            st.pyplot(fig2)
-
         with col_r:
-            # Risk Factors
             flags = []
-            if contract == 'Month-to-month':                    flags.append(("🔴 Kontrak Month-to-Month", "high"))
-            if tenure <= 6:                                     flags.append(("🔴 Pelanggan baru (≤6 bln)", "high"))
-            if tech_support == 'No' and internet != 'No':      flags.append(("🟡 Tanpa Tech Support", "med"))
-            if internet == 'Fiber optic':                       flags.append(("🟡 Fiber Optic (high churn segment)", "med"))
-            if monthly_charges > 70:                            flags.append(("🟡 Monthly Charges > $70", "med"))
-            if payment_method == 'Electronic check':            flags.append(("🟡 Electronic Check Payment", "med"))
-            if not flags:                                       flags.append(("🟢 Tidak ada faktor risiko signifikan", "low"))
+            if contract == 'Month-to-month':               flags.append(("🔴 Kontrak Month-to-Month","high"))
+            if tenure <= 6:                                flags.append(("🔴 Pelanggan baru (≤6 bln)","high"))
+            if tech_support=='No' and internet!='No':      flags.append(("🟡 Tanpa Tech Support","med"))
+            if internet == 'Fiber optic':                  flags.append(("🟡 Fiber Optic segment","med"))
+            if monthly_charges > 70:                       flags.append(("🟡 Monthly Charges > $70","med"))
+            if payment_method == 'Electronic check':       flags.append(("🟡 Electronic Check","med"))
+            if not flags:                                  flags.append(("🟢 Tidak ada faktor risiko signifikan","low"))
 
             st.markdown('<div class="sec-head">Faktor Risiko Aktif</div>', unsafe_allow_html=True)
             for flag, level in flags:
                 cls = "alert-high" if level=="high" else ("alert-medium" if level=="med" else "alert-low")
                 st.markdown(f'<div class="{cls}" style="padding:8px 14px;margin:4px 0">{flag}</div>', unsafe_allow_html=True)
 
-            # Rekomendasi
             recs = []
-            if contract == 'Month-to-month' and prob >= 0.5:
-                recs.append("💼 Tawarkan diskon 15–20% upgrade ke kontrak tahunan")
-            if tenure <= 6:
-                recs.append("🤝 Aktifkan onboarding check-in bulan ke-2 dan ke-3")
-            if tech_support == 'No' and internet != 'No':
-                recs.append("🛠 Trial TechSupport 1 bulan gratis")
-            if payment_method == 'Electronic check' and prob >= 0.5:
-                recs.append("🏦 Dorong migrasi ke auto-payment + cashback")
-            if monthly_charges > 70 and prob >= 0.5:
-                recs.append("💰 Review bundling paket value-for-money")
-            if not recs:
-                recs.append("✅ Pelanggan risiko rendah — pertahankan kualitas layanan")
+            if contract=='Month-to-month' and prob>=0.5: recs.append("💼 Diskon 15–20% upgrade ke kontrak tahunan")
+            if tenure <= 6:                               recs.append("🤝 Onboarding check-in bulan ke-2 dan ke-3")
+            if tech_support=='No' and internet!='No':    recs.append("🛠 Trial TechSupport 1 bulan gratis")
+            if payment_method=='Electronic check':        recs.append("🏦 Migrasi ke auto-payment + cashback")
+            if monthly_charges>70 and prob>=0.5:          recs.append("💰 Review bundling paket value-for-money")
+            if not recs:                                  recs.append("✅ Pertahankan kualitas layanan")
 
             st.markdown('<div class="sec-head">Rekomendasi Tindakan</div>', unsafe_allow_html=True)
             for rec in recs:
